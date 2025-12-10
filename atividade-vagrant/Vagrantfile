@@ -1,0 +1,163 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+
+Vagrant.configure("2") do |config|
+  # 1. Configuração da VM Debian 12
+  config.vm.box = "debian/bookworm64" # Debian 12
+  config.vm.hostname = "onplay-server"
+
+  # 2. Configuração de Rede (NAT com Port Forwarding)
+  # Acessar frontend em http://localhost:4200
+  config.vm.network "forwarded_port", guest: 80, host: 4200
+  # Acessar backend em http://localhost:8080 (opcional, para testes)
+  config.vm.network "forwarded_port", guest: 8080, host: 8080
+  # Banco de dados (opcional)
+  config.vm.network "forwarded_port", guest: 5432, host: 5432
+
+  # Configuração de recursos da VM (Recomendado 2GB+ RAM para Java+Node builds)
+  config.vm.provider "virtualbox" do |vb|
+    vb.memory = "2048"
+    vb.cpus = 2
+  end
+
+  # 3. Provisionamento do Sistema
+  config.vm.provision "shell", inline: <<-SHELL
+    # Atualizar o sistema
+    echo "Atualizando sistema..."
+    apt-get update && apt-get upgrade -y
+    apt-get install -y curl git unzip
+
+    # Instalar Docker
+    echo "Instalando Docker..."
+    if ! command -v docker &> /dev/null; then
+        curl -fsSL https://get.docker.com -o get-docker.sh
+        sh get-docker.sh
+        usermod -aG docker vagrant
+    fi
+
+    # Definir diretório de trabalho
+    WORKDIR="/home/vagrant/onplay_project"
+    mkdir -p $WORKDIR
+    cd $WORKDIR
+
+    # Clonar Repositórios
+    echo "Clonando repositórios..."
+    if [ ! -d "frontend" ]; then
+      git clone https://github.com/gustavo-andrelo/onplay_reborn_frontend.git frontend
+    fi
+    if [ ! -d "backend" ]; then
+      git clone https://github.com/gustavo-andrelo/onplay_reborn_backend.git backend
+    fi
+
+    # -----------------------------
+    # Criar Dockerfile do Backend (Spring Boot)
+    # -----------------------------
+    echo "Criando Dockerfile do Backend..."
+cat <<EOF > backend/Dockerfile
+# Estágio de Build
+FROM maven:3.8.5-openjdk-17 AS build
+WORKDIR /app
+COPY pom.xml .
+COPY src ./src
+# Pula testes para agilizar o build
+RUN mvn clean package -DskipTests
+
+# Estágio de Execução
+FROM eclipse-temurin:17-jdk-jammy
+WORKDIR /app
+COPY --from=build /app/target/*.jar app.jar
+EXPOSE 8080
+ENTRYPOINT ["java", "-jar", "app.jar"]
+EOF
+
+    # -----------------------------
+    # Criar Dockerfile do Frontend (Angular)
+    # -----------------------------
+    echo "Criando Dockerfile do Frontend..."
+    # ATENÇÃO: O 'EOF' abaixo DEVE estar encostado na margem esquerda (sem espaços)
+cat <<'EOF' > frontend/Dockerfile
+# Estágio de Build
+FROM node:18 AS build
+WORKDIR /app
+COPY package*.json ./
+RUN npm install
+COPY . .
+RUN npm run build -- --configuration=production
+
+# Estágio de Servidor Web
+FROM nginx:alpine
+COPY --from=build /app/dist/onplay-frontend /usr/share/nginx/html
+
+# Configuração do Nginx
+RUN echo 'server { \
+    listen 80; \
+    server_name localhost; \
+    root /usr/share/nginx/html; \
+    index index.html; \
+    absolute_redirect off; \
+    location / { \
+        try_files \$uri \$uri/ /index.html; \
+    } \
+}' > /etc/nginx/conf.d/default.conf
+
+EXPOSE 80
+EOF
+
+    # -----------------------------
+    # Criar docker-compose.yml
+    # -----------------------------
+    echo "Criando docker-compose.yml..."
+cat <<EOF > docker-compose.yml
+services:
+  # Banco de Dados Postgres
+  db:
+    image: postgres:15
+    container_name: onplay-db
+    environment:
+      POSTGRES_DB: onplay
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: A12345678a
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  # Backend Spring Boot
+  backend:
+    container_name: onplay-backend
+    build: ./backend
+    ports:
+      - "8080:8080"
+    environment:
+      # Sobrescreve a URL do banco para apontar para o container 'db' em vez de localhost
+      SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/onplay
+      SPRING_DATASOURCE_USERNAME: postgres
+      SPRING_DATASOURCE_PASSWORD: A12345678a
+      SPRING_JPA_HIBERNATE_DDL_AUTO: update
+    depends_on:
+      - db
+
+  # Frontend Angular
+  frontend:
+    container_name: onplay-frontend
+    build: ./frontend
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:
+EOF
+
+    # -----------------------------
+    # Subir os Containers
+    # -----------------------------
+    echo "Iniciando aplicação com Docker Compose..."
+    docker compose up -d --build
+
+    echo "Deploy concluído! Acesso:"
+    echo "Frontend: http://localhost:4200 (no seu navegador host)"
+    echo "Backend: http://localhost:8080/api"
+  SHELL
+end
