@@ -96,7 +96,7 @@ Esta conta possui a role ADMIN, que libera funcionalidades exclusivas no Fronten
 
 Credenciais Padrão do Admin:
 
-Login/Email: admin@admin.com (Verifique no seu DataInitializer.java se alterou) Senha: 123456 (Ou a senha definida no seed do backend)
+Login/Email: admin@admin.com (Verifique no seu DataInitializer.java se alterou) Senha: admin (Ou a senha definida no seed do backend)
 
 Funcionalidades Exclusivas do Admin:
 
